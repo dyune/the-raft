@@ -41,8 +41,5 @@ type ConsensusModule struct {
 	state       State
 	currentTerm int
 	resetEvent  time.Time
-}
-
-func (cm *ConsensusModule) startElection() {
-
+	votedFor    int
 }
