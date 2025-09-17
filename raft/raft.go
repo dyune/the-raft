@@ -17,8 +17,8 @@ type Reply struct {
 	votedFor bool
 }
 
-const ELECTION_TIME = time.Duration(300) * time.Millisecond
-const DEBUG_CM = 1
+const ResetTime = time.Duration(300) * time.Millisecond
+const DebugCm = 1
 
 func (cm *ConsensusModule) runElectionTimer() {
 	ticker := time.NewTimer(10 * time.Millisecond)
@@ -34,7 +34,7 @@ func (cm *ConsensusModule) runElectionTimer() {
 			cm.mu.Unlock()
 			return
 		}
-		if elapsed := time.Since(cm.resetEvent); elapsed > ELECTION_TIME {
+		if elapsed := time.Since(cm.resetEvent); elapsed > ResetTime {
 			cm.startElection()
 			cm.mu.Unlock()
 			return
@@ -44,7 +44,7 @@ func (cm *ConsensusModule) runElectionTimer() {
 }
 
 func (cm *ConsensusModule) dlog(format string, args ...any) {
-	if DEBUG_CM > 0 {
+	if DebugCm > 0 {
 		format = fmt.Sprintf("[%d] ", cm.id) + format
 		log.Printf(format, args...)
 	}
@@ -58,8 +58,28 @@ func (cm *ConsensusModule) becomeFollower() {
 	return
 }
 
-func (cm *ConsensusModule) becomeLeader() {
+func (cm *ConsensusModule) sendHeartBeats() {
 	return
+}
+
+func (cm *ConsensusModule) becomeLeader() {
+	cm.state = Leader
+	cm.dlog("has become the leader on term %d", cm.currentTerm)
+	go func() {
+		ticker := time.NewTimer(40 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			<-ticker.C
+			cm.sendHeartBeats()
+			cm.mu.Lock()
+			if cm.state != Leader {
+				cm.dlog("was voted out")
+				cm.mu.Unlock()
+				return
+			}
+			cm.mu.Unlock()
+		}
+	}()
 }
 
 func (cm *ConsensusModule) startElection() {
