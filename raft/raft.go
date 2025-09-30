@@ -17,6 +17,11 @@ type Reply struct {
 	votedFor bool
 }
 
+type AppendEntryReply struct {
+	replyTerm int
+	success   bool
+}
+
 const ResetTime = time.Duration(300) * time.Millisecond
 const DebugCm = 1
 
@@ -50,16 +55,36 @@ func (cm *ConsensusModule) dlog(format string, args ...any) {
 	}
 }
 
-func (server *Server) call(id int, method string, request VoteRequest, result *Reply) error {
+func (server *Server) call(id int, method string, args any, reply any) error {
 	return errors.New("not implemented yet")
 }
 
-func (cm *ConsensusModule) becomeFollower() {
-	return
+func (cm *ConsensusModule) becomeFollower(term int) {
+	cm.dlog("demoted to follower in term: %d", term)
+	cm.currentTerm = term
+	cm.votedFor = -1
+	cm.resetEvent = time.Now()
+	go cm.runElectionTimer()
 }
 
 func (cm *ConsensusModule) sendHeartBeats() {
-	return
+	cm.mu.Lock()
+	term := cm.currentTerm
+	id := cm.id
+	cm.mu.Unlock()
+
+	for _, peerId := range cm.peerIds {
+		args := AppendEntryArgs{term, id}
+		go func() {
+			cm.dlog("in term %d sent heartbeat to a peer of id %d", term, id)
+			var reply AppendEntryReply
+			cm.server.call(peerId, "ConsensusModule.AppendEntry", args, &reply)
+			if term <= reply.replyTerm {
+				cm.dlog("out of term while sending heartbeats")
+				cm.becomeFollower(reply.replyTerm)
+			}
+		}()
+	}
 }
 
 func (cm *ConsensusModule) becomeLeader() {
@@ -80,6 +105,63 @@ func (cm *ConsensusModule) becomeLeader() {
 			cm.mu.Unlock()
 		}
 	}()
+}
+
+type RequestVoteArgs struct {
+	term        int
+	candidateId int
+}
+
+type RequestVoteReply struct {
+	term        int
+	voteGranted bool
+}
+
+func (cm *ConsensusModule) requestVote(args RequestVoteArgs, reply *RequestVoteReply) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if cm.state == Unhealthy {
+		return nil
+	}
+
+	if args.term > cm.currentTerm {
+		cm.dlog("out of term")
+		cm.becomeFollower(args.term)
+	}
+	if args.term == cm.currentTerm && (cm.votedFor == -1 || cm.votedFor == args.candidateId) {
+		reply.voteGranted = true
+		cm.votedFor = args.candidateId
+		cm.resetEvent = time.Now()
+	} else {
+		reply.voteGranted = false
+	}
+	reply.term = cm.currentTerm
+	cm.dlog("replied RequestVote: %+v", reply)
+	return nil
+}
+
+func (cm *ConsensusModule) appendEntries(args AppendEntryArgs, reply *AppendEntryReply) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if cm.state == Unhealthy {
+		return nil
+	}
+	if args.term > cm.currentTerm {
+		cm.dlog("out of term")
+		cm.becomeFollower(args.term)
+	}
+	reply.success = false
+	if args.term == cm.currentTerm {
+		if cm.state == Leader {
+			cm.dlog("this cm with id=%d was voted out", cm.id)
+			cm.becomeFollower(args.term)
+		}
+		cm.resetEvent = time.Now()
+		reply.success = true
+	}
+	reply.replyTerm = cm.currentTerm
+	cm.dlog("replied AppendEntry: %+v", reply)
+	return nil
 }
 
 func (cm *ConsensusModule) startElection() {
@@ -108,7 +190,7 @@ func (cm *ConsensusModule) startElection() {
 				if result.term > savedTerm {
 					cm.dlog("has an outdated term."+
 						"While waiting for reply, higher term %d was found.", result.term)
-					cm.becomeFollower()
+					cm.becomeFollower(result.term)
 					return
 				} else if result.term == savedTerm {
 					votes++

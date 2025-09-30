@@ -43,3 +43,8 @@ type ConsensusModule struct {
 	resetEvent  time.Time
 	votedFor    int
 }
+
+type AppendEntryArgs struct {
+	term     int
+	leaderId int
+}
